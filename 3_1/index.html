@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ja">
+	<head>
+		<meta charset = "utf-8">
+		<title>Emotion Sync System</title>
+		<script src="https://www.mirandora.com/rpi/js/easeljs-0.8.2.min.js"></script>
+		<script src="https://www.mirandora.com/rpi/js/tweenjs-0.6.2.min.js"></script>
+		<script src="https://www.mirandora.com/rpi/js/jquery-2.2.3.min.js"></script>
+		<link href='https://fonts.googleapis.com/css?family=Poiret+One' rel='stylesheet' type='text/css'>
+		<link href='https://www.mirandora.com/rpi/css/main.css' rel='stylesheet' type='text/css'>
+	</head>
+<body>
+	<div id="header">
+		<div id="title_box">
+			<div id="title">Emotion Sync System</div>
+			<div id="sub_title">漫画のキャラと読者の感情同期システム</div>
+			<div id="cright">(c)www.mirandora.com 2016</div>
+		</div>
+	</div>
+	<div id="main_area">
+		<div id="comic_box">
+			<div id="description">現在表示中のタイトル</div>
+			<div id="manga_title">『データサイエンティストたちの黙示録』</div>
+			<span id="page_stage" class="page_class">page : </span><span id="now_page" class="page_class">1</span> / <span id="total_page" class="page_class">5</span>
+			<div id="manga_stage">
+				<img id="image_field" src="https://www.mirandora.com/rpi/images/image01.jpg">
+			</div>			
+		</div>
+		<div id="sensor_box">
+			<div id="shinpaku_area">
+				<div class="caption_jp">心拍数</div>
+				<div class="caption_en">heart rate</div>
+				<span class="cap">bpm : </span><span id="shinpaku_value">now loading...</span><br>
+				<canvas id="shinpaku_stage" width="440" height="220"></canvas><br>
+			</div>			
+			<div id="face_area">
+				<div class="caption_jp">表情</div>
+				<div class="caption_en">expression</div>
+		        <button type="button" onClick="shutter_cl()" id="shutter">あなたの表情を撮影</button><br>
+		        <div id="exp_area">
+		        	<div id="chara_exp">
+		        		<div class="exp_cap">キャラクターの表情</div>
+		        		<div class="exp_cap" id="chara_face_text">こまった顔</div>
+		        		<div id="chara_face"><img id="chara_face_img" src="https://www.mirandora.com/rpi/images/face_sad.png"></div>
+		       		</div>
+		       		<div id="your_exp">
+		        		<div class="exp_cap">あなたの表情</div>
+		        		<div class="exp_cap" id="your_face_text">無表情</div>
+				    	<img id="rp_camera" src ="./images/raspi_camera.jpg" width="240px" height="160px">
+		       		</div>	 		
+					<div class="clear"></div>
+				</div>
+			</div>			
+		</div>
+		<div class="clear"></div>
+	</div>
+	<script src="/socket.io/socket.io.js"></script>
+	<script>
+		var socket = io.connect();
+        var CV_URL = "https://vision.googleapis.com/v1/images:annotate?key=取得したAPIキー";
+		var sensor_array = [];
+		var shinpaku_array = [];
+		var shinpaku = 0;
+		var shinpaku_threshold = 0.3;
+		var stage = new createjs.Stage("shinpaku_stage")
+		var debug_mode_flag = 1;
+
+		var image_array = [
+			"https://www.mirandora.com/rpi/images/image01.jpg",
+			"https://www.mirandora.com/rpi/images/image02.jpg",
+			"https://www.mirandora.com/rpi/images/image03.jpg",
+			"https://www.mirandora.com/rpi/images/image04.jpg"
+		];
+		var image_array_index = 0;
+
+		//[threshold_shinpaku, beyond:1 behind:0, count, face_index]
+		var shinpaku_conditions_array = [
+			[90 ,0, 5, 1],
+			[110,1, 5, 3],
+			[120,1, 5, 2],
+			[90 ,0, 5, 0],
+		];
+		var chara_face_array = [
+			[["https://www.mirandora.com/rpi/images/face_sad.png"],["こまった顔"]],
+			[["https://www.mirandora.com/rpi/images/face_surprise.png"],["おどろいた顔"]],
+			[["https://www.mirandora.com/rpi/images/face_angry.png"],["おこった顔"]],
+			[["https://www.mirandora.com/rpi/images/face_smile.png"],["うれしい顔"]]
+		];
+
+		//0:smile 1:sad 2:angry 3:surprise
+		var your_face_index = 0;
+		var your_face_array = [
+			"うれしい顔",
+			"こまった顔",
+			"おこった顔",
+			"おどろいた顔",			
+			"無表情"			
+		];
+
+
+		setInterval(function(){
+			socket.emit('emit_from_client',1);
+		},100);
+
+		socket.on('emit_from_server',function(data){
+			var date_obj = new Date();
+			var latest_data = [date_obj,data]; 
+			sensor_array.push(latest_data);
+
+			shinpaku = parseInt( get_shinpaku(sensor_array));
+			document.getElementById("shinpaku_value").textContent = shinpaku;
+
+			shinpaku_array.push(shinpaku);
+			viz_shinpaku();
+
+			judge_image_condition();
+		});
+
+        socket.on('emit_from_server_with_camera',function(data){
+            displayJSON(data);
+        });
+
+		function judge_image_condition(){
+			var judge_image_count = 0;
+
+			if(shinpaku_array.length > 30){
+				for(var i = shinpaku_array.length-10;i<shinpaku_array.length;i++){
+					if(shinpaku_conditions_array[image_array_index][1] == 1){
+						if(shinpaku_array[i] > shinpaku_conditions_array[image_array_index][0]){
+							judge_image_count ++;
+						}
+					}
+					else {
+						if(shinpaku_array[i] < shinpaku_conditions_array[image_array_index][0]){
+							judge_image_count ++;
+						}
+					}
+				}
+
+				if(judge_image_count > shinpaku_conditions_array[image_array_index][2] 
+					&& shinpaku_conditions_array[image_array_index][3] == your_face_index){
+					image_array_index++;
+					if(image_array_index > image_array.length-1){
+						image_array_index = 0;
+					}
+
+					document.getElementById("image_field").src = image_array[image_array_index];
+					document.getElementById("chara_face_text").textContent = chara_face_array[image_array_index][1];
+					document.getElementById("chara_face_img").src = chara_face_array[image_array_index][0];
+				}
+			}
+		}
+
+		function get_shinpaku(array){
+			var shinpaku = 0;
+			var heart_beat_span = 0;
+
+			//0.1以下になったうえで、0.3以上になった回数の時間間隔
+
+			var count_index = array.length -1;
+			var span_start_time = array[count_index][0];
+			var span_end_time = array[count_index][0];
+
+			var phase_index = 0;
+
+			var array_threshold = 0;
+			//check recent 2.5 seconds
+			if(array.length > 25){
+				array_threshold = array.length-25;
+			}
+
+			while(count_index > array_threshold){
+				if(array[count_index][1] > 0.3 && phase_index == 0){
+					span_end_time = array[count_index][0];
+					phase_index = 1;
+				}
+				if(array[count_index][1] < 0.1 && phase_index == 1){
+					phase_index = 2;
+				} 
+				if(array[count_index][1] > 0.3 && phase_index == 2){
+					span_start_time = array[count_index][0];					
+					phase_index = 3;
+					break;
+				} 
+				count_index--;	
+			}
+
+			if(phase_index == 3){
+				heart_beat_span = span_end_time - span_start_time;
+			}
+
+			if(heart_beat_span != 0){
+				shinpaku = 60000 / heart_beat_span;
+			}
+
+			return 	shinpaku;
+		}
+
+		function viz_shinpaku(){
+			stage.removeAllChildren();
+
+			var cap_text1 = new createjs.Text("キャラクターの心拍数", "11px Meiryo,メイリオ,HiraKakuPro-W3,sans-serif,Osaka", "#ffffff");
+			cap_text1.x = 0;
+			cap_text1.y = 10;
+			stage.addChild(cap_text1);
+
+			var cap_graphics = new createjs.Graphics();
+			cap_graphics.beginStroke("#33cccc");
+			cap_graphics.beginFill("#33cccc");
+			cap_graphics
+			     .moveTo(0,0)
+			     .lineTo(0,10)
+			     .lineTo(10,10)
+			     .lineTo(10,0)
+			     .closePath();
+			var cap_shape = new createjs.Shape(cap_graphics);
+			cap_shape.x = 120;
+			cap_shape.y = 14;
+		    stage.addChild(cap_shape);
+
+			var cap_text2 = new createjs.Text("あなたの心拍数", "11px Meiryo,メイリオ,HiraKakuPro-W3,sans-serif,Osaka", "#ffffff");
+			cap_text2.x = 170;
+			cap_text2.y = 10;
+			stage.addChild(cap_text2);
+
+			var cap2_graphics = new createjs.Graphics();
+			cap2_graphics.beginStroke("#ff6699");
+			cap2_graphics.beginFill("#ff6699");
+			cap2_graphics
+			     .moveTo(0,0)
+			     .lineTo(0,10)
+			     .lineTo(10,10)
+			     .lineTo(10,0)
+			     .closePath();
+			var cap2_shape = new createjs.Shape(cap2_graphics);
+			cap2_shape.x = 260;
+			cap2_shape.y = 14;
+		    stage.addChild(cap2_shape);
+
+
+			var x_axis_line = new createjs.Shape();
+			x_axis_line
+				.graphics
+		    	.beginStroke("#ffffff")
+				.setStrokeStyle(1)
+				.moveTo( 10 ,30)
+				.lineTo( 10 ,120)
+				.closePath();
+		    stage.addChild(x_axis_line);
+			var y_axis_line = new createjs.Shape();
+			y_axis_line
+				.graphics
+		    	.beginStroke("#ffffff")
+				.setStrokeStyle(1)
+				.moveTo( 10 ,120)
+				.lineTo( 420 + 10 ,120)
+				.closePath();
+		    stage.addChild(y_axis_line);
+
+			if(shinpaku_array.length > 30){
+				for(var i=0;i<20;i++){
+					var moving_line = new createjs.Shape();
+					moving_line
+						.graphics
+				    	.beginStroke("#ff6699")
+						.setStrokeStyle(4)
+						.moveTo( i*20 + 24 ,120)
+						.lineTo( i*20 + 24 ,120 - parseInt(shinpaku_array[shinpaku_array.length - (20-i)]*0.5))
+						.closePath();
+				    stage.addChild(moving_line);
+					var chara_line = new createjs.Shape();
+					chara_line
+						.graphics
+				    	.beginStroke("#33cccc")
+						.setStrokeStyle(4)
+						.moveTo( i*20 + 20 ,120)
+						.lineTo( i*20 + 20 ,120 - shinpaku_conditions_array[image_array_index][0] * 0.5)
+						.closePath();
+				    stage.addChild(chara_line);
+				}
+			}
+			stage.update();
+		}
+
+        function shutter_cl(){
+            socket.emit('emit_from_client_with_camera',1);
+        }
+
+        function displayJSON(data) {
+            var sub_data = data.substring(1,data.length-1);
+            var obj = (new Function("return " + sub_data))();
+            var contents = JSON.stringify(obj, null, 4);
+            var json_data = JSON.parse(contents);
+
+            console.log(json_data.faceAnnotations[0]);
+
+            if(json_data.faceAnnotations[0].joyLikelihood=="VERY_LIKELY" || json_data.faceAnnotations[0].joyLikelihood=="LIKELY"){
+                your_face_index = 0;
+            }
+            else if(json_data.faceAnnotations[0].sorrowLikelihood=="VERY_LIKELY" || json_data.faceAnnotations[0].sorrowLikelihood=="LIKELY"){
+                your_face_index = 1;
+            }
+            else if(json_data.faceAnnotations[0].angerLikelihood=="VERY_LIKELY" || json_data.faceAnnotations[0].angerLikelihood=="LIKELY"){
+                your_face_index = 2;
+            }
+            else if(json_data.faceAnnotations[0].surpriseLikelihood=="VERY_LIKELY" || json_data.faceAnnotations[0].surpriseLikelihood=="LIKELY"){
+                your_face_index = 3;
+            }
+            else {
+            	your_face_index = 4;
+            }
+			document.getElementById("your_face_text").textContent = your_face_array[your_face_index];
+        }
+
+        $(function(){
+            $('#shutter').click(function(){
+                setTimeout(function(){
+                    var timestamp = new Date().getTime();
+                    $('#rp_camera').attr('src',$('#rp_camera').attr('src')+'?'+timestamp);  
+                },1000);
+            });
+        });
+	</script>
+</body>
+</html>
